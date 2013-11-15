@@ -24,6 +24,9 @@ class Event(object):
     def __cmp__(self, other):
         return cmp(self.timestamp, other.timestamp)
 
+    def __str__(self):
+        return str(self.timestamp)
+
 
 class Job(Event):
     def __init__(self, data_dict):
@@ -44,44 +47,23 @@ class Command(Event):
 class Scale(object):
     """The actual algorithm
     """
-    pass
+    def __init__(self, number_of_jobs):
+        self.now = 0
 
-
-### Simulating input
-class Simulation(object):
-    """Simulates activity with fixed arrival rates, randomly drawing service
-    times from a data set. Behaves like an iterator, returning Job objects
-    at each call.
-    """
-    def __init__(self, arrival_rates):
-        """Initiate this iterator.
-
-        Takes a dictionary of arrival rates, {'url': 2.1, ...} and a dictionary
-        of lists with service time samples: {'url': [1.232, 2.1232, ...], ...}
-        """
-        self.now = int(time.time()) - random.randint(0, 7 * 24 * 60 * 60)
-        self.arrival_rates = arrival_rates
-
-    def load_service_distribution(self, input):
-        self.service_times = dict((category, []) for category in CATEGORIES)
-        for job in parse_input(input):
-            self.service_times[job.category].append(job.duration)
-
-    def __iter__(self):
-        return self
-
-    def next(self):
+    def startup(self, event):
+        starting_time = event.timestamp - MACHINE_INACTIVE
         for category in CATEGORIES:
-            number_of_arrivals = scipy.stats.poisson.rvs(
-                self.arrival_rates[category]
-            )
-            for i in range(number_of_arrivals):
-                service_time = random.choice(self.service_times[category])
-                guid = str(uuid.uuid1())
-                data_dict = dict(zip(('timestamp', 'duration', 'guid', 'category'),
-                                     (self.now, service_time, guid, category)))
-                return Job(data_dict)
-            self.now += 1
+            data_dict = dict(zip(('timestamp', 'category', 'cmd'),
+                                 (starting_time, category, 'launch')))
+            self.events.extend([Command(data_dict)] * 40)
+
+    def receive(self, event):
+        self.events = [event]
+        if not self.now:
+            self.startup(event)
+        self.now = event.timestamp
+        heapq.heapify(self.events)
+        return self.events
 
 
 ### Scoring and measurement
@@ -149,11 +131,10 @@ class Evaluator(object):
         self.billed += (when_stops - machine.running_since) / BILLING_UNIT + 1
 
     def evaluate(self):
-        for category in self.categories:
+        for category in CATEGORIES:
             while self.machines[category]:
                 machine = self.machines[category][0]
                 self.terminate(machine, category)
-        self.statistics.plot_waiting_time()
         if self.overwait:
             return 0
         else:
@@ -172,14 +153,15 @@ class Machine(object):
     def running_since(self):
         return self.active_from - MACHINE_INACTIVE
 
+    @property
+    def available_from(self):
+        return max(self.active_from, self.busy_till)
+
     def till_billing(self, now):
         return abs((now - self.running_since) % -BILLING_UNIT)
 
     def is_available(self, now):
         return now >= self.active_from and self.busy_till <= now
-
-    def available_from(self):
-        return max(self.active_from, self.busy_till)
 
 
 ### Statistics
@@ -187,8 +169,68 @@ class Statistics(object):
     def __init__(self, world):
         self.world = world
 
+    def step(self):
+        pass
+
+
+### Simulating input
+class Simulation(object):
+    """Simulates activity with fixed arrival rates, randomly drawing service
+    times from a data set. Behaves like an iterator, returning Job objects
+    at each call.
+    """
+    def __init__(self, arrival_rates):
+        """Initiate this iterator.
+
+        Takes a dictionary of arrival rates, {'url': 2.1, ...}.
+        """
+        self.now = int(time.time()) - random.randint(0, 7 * 24 * 60 * 60)
+        self.arrival_rates = arrival_rates
+
+    def load_service_distribution(self, input):
+        """Loads service time distributions from a log file.
+        """
+        self.service_times = dict((category, []) for category in CATEGORIES)
+        for job in parse_input(input):
+            self.service_times[job.category].append(job.duration)
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        """Returns randomly generated jobs infinitely.
+        """
+        for category in CATEGORIES:
+            number_of_arrivals = scipy.stats.poisson.rvs(
+                self.arrival_rates[category]
+            )
+            for i in range(number_of_arrivals):
+                service_time = random.choice(self.service_times[category])
+                guid = str(uuid.uuid1())
+                data_dict = dict(zip(('timestamp', 'duration', 'guid', 'category'),
+                                     (self.now, service_time, guid, category)))
+                return Job(data_dict)
+            self.now += 1
+
 
 ### Program logic
+def main(file=None):
+    args, rest = parse_arguments()
+    if file:
+        rest = [file]
+    if args.debug:
+        set_logger()
+    with open(rest[0]) if rest else sys.stdin as f:
+        number_of_jobs = int(f.readline().strip())
+        scale = Scale(number_of_jobs)
+        evaluator = Evaluator()
+        jobs = parse(f)
+        for job in jobs:
+            for event in scale.receive(job):
+                evaluator.receive(event)
+        print evaluator.evaluate()
+
+
 def parse(f):
     while True:
         line = f.readline()
@@ -210,3 +252,6 @@ def parse_arguments():
 
 def set_logger():
     logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+
+if __name__ == '__main__':
+    main()
