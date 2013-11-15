@@ -32,8 +32,11 @@ import uuid
 
 class Event(object):
     def __init__(self, data_dict):
-        fields = ['year', 'month', 'day', 'hour', 'minute', 'second']
-        self.timestamp = calendar.timegm(map(lambda k: int(data_dict[k]), fields))
+        if 'timestamp' in data_dict.keys():
+            self.timestamp = data_dict['timestamp']
+        else:
+            fields = ['year', 'month', 'day', 'hour', 'minute', 'second']
+            self.timestamp = calendar.timegm(map(lambda k: int(data_dict[k]), fields))
 
     def __cmp__(self, other):
         return cmp(self.timestamp, other.timestamp)
@@ -220,15 +223,27 @@ def read_events(fd):
     common = r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) (?P<hour>\d\d):(?P<minute>\d\d):(?P<second>\d\d) '
     cmd_re = re.compile(common + r'(?P<cmd>[^ ]+) (?P<category>\w+)')
     job_re = re.compile(common + r'(?P<guid>[^ ]+) (?P<category>\w+) (?P<elapsed>\d+\.\d+)')
+    
+    common_new = r'^(?P<timestamp>\d{10}) '
+    cmd_re_new = re.compile(common_new + r'(?P<cmd>[^ ]+) (?P<category>\w+)')
+    job_re_new = re.compile(common_new + r'(?P<elapsed>\d+\.\d+) (?P<guid>[^ ]+) (?P<category>\w+)')
 
     while True:
         line = fd.readline()
         if not line:
             break
 
+        n = job_re_new.match(line)
+        if n:
+            yield Job(n.groupdict())
+            continue
         m = job_re.match(line)
         if m:
             yield Job(m.groupdict())
+            continue
+        n = cmd_re_new.match(line)
+        if n:
+            yield Command(m.groupdict())
             continue
         m = cmd_re.match(line)
         if m:
