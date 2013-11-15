@@ -98,7 +98,7 @@ class State(WithLog):
 
     # TRIAL_ENDS refers to the grace period of the first 24 hours
     # during which competitors will not be disqualified or penalized.
-    TRIAL_ENDS = 24 * 60 * 60
+    TRIAL_ENDS = 0
     # After the grace period, 5 seconds is the maximum time a job can
     # spend in the queue.
     MAX_QUEUE_TIME = 5
@@ -165,7 +165,7 @@ class State(WithLog):
                 priority = (machine.till_billing(job.timestamp) - job.elapsed) % -3600  # Check whether this makes sense
                 heapq.heappush(machine_queue, (priority, machine))
             while machine_queue:
-                machine = heapq.heappop(machine_queue)
+                _, machine = heapq.heappop(machine_queue)
                 # Make sure the machine is active i.e. isn't starting up/busy the next 5 seconds
                 if machine.is_active(job.timestamp + self.MAX_QUEUE_TIME):
                     machine.busy_till = max(machine.busy_till, job.timestamp) + job.elapsed
@@ -175,18 +175,18 @@ class State(WithLog):
                 machine_queue = []
                 # Prioritize the machines by when they become available (incurring minimum penalty)
                 for machine in self.machines[category]:
-                    heapq.heappush(machine_queue, (max(machine.busy_till, machine.available_from), machine))
-                machine = heapq.heappop(machine_queue)
-                if max(machine.busy_till, machine.available_from) - job.timestamp < self.MAX_PENALTY_TIME:
+                    heapq.heappush(machine_queue, (max(machine.busy_till, machine.active_from), machine))
+                _, machine = heapq.heappop(machine_queue)
+                if max(machine.busy_till, machine.active_from) - job.timestamp < self.MAX_PENALTY_TIME:
                     machine.busy_till = machine.busy_till + job.elapsed
-                    self.penalize(max(machine.busy_till, machine.available_from) - job.timestamp)
+                    self.penalize(max(machine.busy_till, machine.active_from) - job.timestamp)
                     self.info('job_executed_till_with_penalty %d %s %s' % (machine.busy_till, job.guid, machine.guid))
                 else:
                     self.info('no_machine_for %d %s' % (job.timestamp, job.guid))
                     self.overwait = job.timestamp > self.trial
 
     def penalize(self, waiting_time):
-        self.penalty += (waiting_time - 5) / 40
+        self.penalty += (waiting_time - 5) / float(40)
 
     def bill(self, category=None):
         bill_previous = self.billed
@@ -224,7 +224,7 @@ def read_events(fd):
     common = r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) (?P<hour>\d\d):(?P<minute>\d\d):(?P<second>\d\d) '
     cmd_re = re.compile(common + r'(?P<cmd>[^ ]+) (?P<category>\w+)')
     job_re = re.compile(common + r'(?P<guid>[^ ]+) (?P<category>\w+) (?P<elapsed>\d+\.\d+)')
-    
+
     common_new = r'^(?P<timestamp>\d{10}) '
     cmd_re_new = re.compile(common_new + r'(?P<cmd>[^ ]+) (?P<category>\w+)')
     job_re_new = re.compile(common_new + r'(?P<elapsed>\d+\.\d+) (?P<guid>[^ ]+) (?P<category>\w+)')
@@ -244,7 +244,7 @@ def read_events(fd):
             continue
         n = cmd_re_new.match(line)
         if n:
-            yield Command(m.groupdict())
+            yield Command(n.groupdict())
             continue
         m = cmd_re.match(line)
         if m:
