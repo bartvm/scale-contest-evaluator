@@ -33,7 +33,7 @@ import uuid
 class Event(object):
     def __init__(self, data_dict):
         if 'timestamp' in data_dict.keys():
-            self.timestamp = data_dict['timestamp']
+            self.timestamp = int(data_dict['timestamp'])
         else:
             fields = ['year', 'month', 'day', 'hour', 'minute', 'second']
             self.timestamp = calendar.timegm(map(lambda k: int(data_dict[k]), fields))
