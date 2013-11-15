@@ -108,6 +108,7 @@ class State(WithLog):
     def __init__(self):
         self.time = 0
         self.billed = 0
+        self.penalty = 0
         self.trial = None
         self.overwait = False
         self.jobs = {'url': [], 'general': [], 'export': []}
@@ -216,7 +217,7 @@ class State(WithLog):
                 self.terminate(machine, category)
             if self.overwait:
                 return -1
-        return self.billed
+        return self.billed + self.penalty
 
 
 def read_events(fd):
