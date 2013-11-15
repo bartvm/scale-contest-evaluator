@@ -99,6 +99,8 @@ class State(WithLog):
     # After the grace period, 5 seconds is the maximum time a job can
     # spend in the queue.
     MAX_QUEUE_TIME = 5
+    # This is the maximum time the job can queue while incurring penalties
+    MAX_PENALTY_TIME = 120
 
     def __init__(self):
         self.time = 0
@@ -152,14 +154,35 @@ class State(WithLog):
         while self.jobs[category]:
             job = heapq.heappop(self.jobs[category])
             self.info('job_retrieved %d %s' % (job.timestamp, job.guid))
-            for machine in self.rnd_machine(category):
+            machine_queue = []
+            # Prioritize the machines closest to their billing cycle
+            # If there isn't enough time to complete the job, de-prioritize (machines with most time left go first)
+            for machine in self.machines[category]:
+                priority = (machine.till_billing(job.timestamp) - job.elapsed) % -3600  # Check whether this makes sense
+                heapq.heappush(machine_queue, (priority, machine))
+            while machine_queue:
+                machine = heapq.heappop(machine_queue)
+                # Make sure the machine is active i.e. isn't starting up/busy the next 5 seconds
                 if machine.is_active(job.timestamp + self.MAX_QUEUE_TIME):
                     machine.busy_till = max(machine.busy_till, job.timestamp) + job.elapsed
                     self.info('job_executed_till %d %s %s' % (machine.busy_till, job.guid, machine.guid))
                     break
-            else:
-                self.info('no_machine_for %d %s' % (job.timestamp, job.guid))
-                self.overwait = job.timestamp > self.trial
+            else:  # This means that there is no machine that can complete the job within 5 seconds
+                machine_queue = []
+                # Prioritize the machines by when they become available (incurring minimum penalty)
+                for machine in self.machines[category]:
+                    heapq.heappush(machine_queue, (max(machine.busy_till, machine.available_from), machine))
+                machine = heapq.heappop(machine_queue)
+                if max(machine.busy_till, machine.available_from) - job.timestamp < self.MAX_PENALTY_TIME:
+                    machine.busy_till = machine.busy_till + job.elapsed
+                    self.penalize(max(machine.busy_till, machine.available_from) - job.timestamp)
+                    self.info('job_executed_till_with_penalty %d %s %s' % (machine.busy_till, job.guid, machine.guid))
+                else:
+                    self.info('no_machine_for %d %s' % (job.timestamp, job.guid))
+                    self.overwait = job.timestamp > self.trial
+
+    def penalize(self, waiting_time):
+        self.penalty += (waiting_time - 5) / 40
 
     def bill(self, category=None):
         bill_previous = self.billed
