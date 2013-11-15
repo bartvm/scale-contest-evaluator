@@ -19,74 +19,65 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-import argparse
 import calendar
 import heapq
 import logging
 import math
-import random
 import re
 import sys
 import uuid
 
 
 class Event(object):
-    def __init__(self, data_dict):
-        if 'timestamp' in data_dict.keys():
-            self.timestamp = int(data_dict['timestamp'])
-        else:
+    def __init__(self, data_dict, legacy):
+        if legacy:  # Legacy logs need their data converted to a UNIX timestamp
             fields = ['year', 'month', 'day', 'hour', 'minute', 'second']
             self.timestamp = calendar.timegm(map(lambda k: int(data_dict[k]), fields))
+        else:
+            self.timestamp = int(data_dict['timestamp'])
 
     def __cmp__(self, other):
-        return cmp(self.timestamp, other.timestamp)
+        return cmp(self.timestamp, other.timestamp)  # Required for sorting in heap queues
 
 
 class Job(Event):
-    def __init__(self, data_dict):
-        super(Job, self).__init__(data_dict)
-        self.category = data_dict['category']
-        self.elapsed = float(data_dict['elapsed'])
-        self.guid = data_dict['guid']
+    def __init__(self, data_dict, legacy):
+        super(Job, self).__init__(data_dict, legacy)
+        self.category = data_dict['category']  # The category e.g. default, url, export
+        self.elapsed = float(data_dict['elapsed'])  # Service time of job
+        self.guid = data_dict['guid']  # Logging only
 
 
 class Command(Event):
-    def __init__(self, data_dict):
-        super(Command, self).__init__(data_dict)
-        self.category = data_dict['category']
-        self.cmd = data_dict['cmd']
+    def __init__(self, data_dict, legacy):
+        super(Command, self).__init__(data_dict, legacy)
+        self.category = data_dict['category']  # The category e.g. default, url, export
+        self.cmd = data_dict['cmd']  # Command e.g. launch, terminate
 
 
 class Machine(object):
-    # VMs are billed by the hour (3600 seconds).
-    BILLING_UNIT = 3600
-    # Boot time is 2 minutes (120 seconds).
-    MACHINE_INACTIVE = 120
+    BILLING_UNIT = 3600  # VMs are billed by the hour (3600 seconds)
+    MACHINE_INACTIVE = 120  # Boot time is 2 minutes (120 seconds)
 
     def __init__(self, booted, world):
-        self.active_from = booted + self.MACHINE_INACTIVE
-        # busy_till specifies when the job currently processed by the
-        # node will end (if any).
-        self.busy_till = 0
-        self.world = world
-        self.terminated = False
-        self.guid = str(uuid.uuid1())
-
-    def __cmp__(self, other):
-        return cmp(self.guid, other.guid)
+        self.active_from = booted + self.MACHINE_INACTIVE  # Time at which we are done booting
+        self.busy_till = 0  # Time at which we finish processing current job
+        self.world = world  # The state of the world
+        self.terminated = False  # True if the machine has been shut down
+        self.guid = str(uuid.uuid1())  # Unique string to identify the machine (logging only)
 
     @property
     def running_since(self):
-        return self.active_from - self.MACHINE_INACTIVE
+        return self.active_from - self.MACHINE_INACTIVE  # Time the machine started booting
 
     def till_billing(self, now):
-        return abs((now - self.running_since) % -self.BILLING_UNIT)
+        return abs((now - self.running_since) % -self.BILLING_UNIT)  # Number of seconds left till we have to pay again
 
     def is_active(self, now):
-        return now >= self.active_from and self.busy_till <= now
+        return now >= self.active_from and self.busy_till <= now  # Whether the machine is/will be available at this point in time
 
 
-class WithLog(object):
+class WithLog(object):  # This is just for logging
     log = logging.getLogger('prezi.com')
 
     def info(self, *args):
@@ -94,43 +85,37 @@ class WithLog(object):
 
 
 class State(WithLog):
+    MAX_QUEUE_TIME = 5  # This is the maximum time the job can queue while incurring penalties
+    MAX_PENALTY_TIME = 120  # The maximum queuing time, after this the system is disqualified
 
-    # TRIAL_ENDS refers to the grace period of the first 24 hours
-    # during which competitors will not be disqualified or penalized.
-    TRIAL_ENDS = 0
-    # After the grace period, 5 seconds is the maximum time a job can
-    # spend in the queue.
-    MAX_QUEUE_TIME = 5
-    # This is the maximum time the job can queue while incurring penalties
-    MAX_PENALTY_TIME = 120
-
-    def __init__(self):
-        self.time = 0
-        self.billed = 0
-        self.penalty = 0
-        self.trial = None
-        self.overwait = False
-        self.jobs = {'url': [], 'default': [], 'export': []}
-        self.machines = {'url': [], 'default': [], 'export': []}
+    def __init__(self, legacy):
+        self.legacy = legacy  # What kind of log we are parsing
+        self.time = 0  # The current time
+        self.billed = 0  # The machine hours billed
+        self.penalty = 0  # The penalty incurred
+        self.overwait = False  # True if we went beyond be the maximum queue time
+        # These are heap queues that will store the machines and jobs
+        if self.legacy:
+            self.categories = ['general', 'export', 'url']
+        else:
+            self.categories = ['default', 'export', 'url']
+        self.jobs = dict((category, []) for category in self.categories)
+        self.machines = dict((category, []) for category in self.categories)
 
     @property
     def now(self):
         return self.time
 
-    @now.setter
+    @now.setter  # The time is set every time a new line is read from the input
     def now(self, value):
         self.time = value
-        if self.trial is None:
-            self.trial = self.time + self.TRIAL_ENDS
-            self.info('trial_ends %d' % self.trial)
 
-    def receive(self, event):
-        self.now = event.timestamp
-        if isinstance(event, Job):
-            heapq.heappush(self.jobs[event.category], event)
-            self.process_events(event.category)
+    def receive(self, event):  # Process a job/command from the input file
+        self.now = event.timestamp  # Update the curren time
+        if isinstance(event, Job):  # We got a new job
+            heapq.heappush(self.jobs[event.category], event)  # Add the job to the queue
+            self.process_event(event)  # Process the jobs in this category
         elif isinstance(event, Command):
-            self.process_events(event.category)
             if event.cmd == 'launch':
                 self.launch(Machine(event.timestamp, self), event.category)
             elif event.cmd == 'terminate':
@@ -147,125 +132,90 @@ class State(WithLog):
         bill = self.bill(machine, category)
         self.info('terminate %d %d %d %s' % (machine.running_since, machine.active_from, bill, machine.guid))
 
-    def rnd_machine(self, category):
-        n = len(self.machines[category])
-        rnd_start = random.randrange(n)
-        for i in range(n):
-            yield self.machines[category][(rnd_start + i) % n]
-
-    def process_events(self, category):
-        while self.jobs[category]:
-            job = heapq.heappop(self.jobs[category])
-            self.info('job_retrieved %d %s' % (job.timestamp, job.guid))
+    def process_event(self, job):
+        category = job.category
+        self.info('job_retrieved %d %s' % (job.timestamp, job.guid))
+        machine_queue = []
+        # Prioritize the machines closest to their billing cycle
+        # If there isn't enough time to complete the job, de-prioritize (machines with most time left go first)
+        for machine in self.machines[category]:
+            priority = (machine.till_billing(job.timestamp) - job.elapsed) % -3600
+            heapq.heappush(machine_queue, (priority, machine))
+        while machine_queue:
+            _, machine = heapq.heappop(machine_queue)
+            # Make sure the machine is active i.e. isn't starting up/busy the next 5 seconds
+            if machine.is_active(job.timestamp + self.MAX_QUEUE_TIME):
+                machine.busy_till = max(machine.busy_till, job.timestamp) + job.elapsed
+                self.info('job_executed_till %d %s %s' % (machine.busy_till, job.guid, machine.guid))
+                break
+        else:  # This means that there is no machine that can complete the job within 5 seconds
             machine_queue = []
-            # Prioritize the machines closest to their billing cycle
-            # If there isn't enough time to complete the job, de-prioritize (machines with most time left go first)
+            # Prioritize the machines by when they become available (incurring minimum penalty)
             for machine in self.machines[category]:
-                priority = (machine.till_billing(job.timestamp) - job.elapsed) % -3600  # Check whether this makes sense
-                heapq.heappush(machine_queue, (priority, machine))
-            while machine_queue:
-                _, machine = heapq.heappop(machine_queue)
-                # Make sure the machine is active i.e. isn't starting up/busy the next 5 seconds
-                if machine.is_active(job.timestamp + self.MAX_QUEUE_TIME):
-                    machine.busy_till = max(machine.busy_till, job.timestamp) + job.elapsed
-                    self.info('job_executed_till %d %s %s' % (machine.busy_till, job.guid, machine.guid))
-                    break
-            else:  # This means that there is no machine that can complete the job within 5 seconds
-                machine_queue = []
-                # Prioritize the machines by when they become available (incurring minimum penalty)
-                for machine in self.machines[category]:
-                    heapq.heappush(machine_queue, (max(machine.busy_till, machine.active_from), machine))
-                _, machine = heapq.heappop(machine_queue)
-                if max(machine.busy_till, machine.active_from) - job.timestamp < self.MAX_PENALTY_TIME:
-                    machine.busy_till = machine.busy_till + job.elapsed
-                    self.penalize(max(machine.busy_till, machine.active_from) - job.timestamp)
-                    self.info('job_executed_till_with_penalty %d %s %s' % (machine.busy_till, job.guid, machine.guid))
-                else:
-                    self.info('no_machine_for %d %s' % (job.timestamp, job.guid))
-                    self.overwait = job.timestamp > self.trial
+                heapq.heappush(machine_queue, (max(machine.busy_till, machine.active_from), machine))
+            _, machine = heapq.heappop(machine_queue)
+            if max(machine.busy_till, machine.active_from) - job.timestamp <= self.MAX_PENALTY_TIME:
+                machine.busy_till = max(machine.busy_till, machine.active_from) + job.elapsed
+                self.penalize(max(machine.busy_till, machine.active_from) - job.timestamp)
+                self.info('job_executed_till_with_penalty %d %s %s' % (machine.busy_till, job.guid, machine.guid))
+            else:
+                self.info('no_machine_for %d %s' % (job.timestamp, job.guid))
+                self.overwait = True
 
     def penalize(self, waiting_time):
         self.penalty += (waiting_time - 5) / float(40)
 
     def bill(self, machine, category):
-        self.machines[category].remove(machine)
-        return self.bill_it(machine)
-
-    def bill_it(self, machine):
         """ Computes the cost of a single virtual machine. """
-        if self.now > self.trial:
-            when_stops = max(self.now, machine.busy_till)
-            billing_start = max(self.trial, machine.running_since)
-            billing_end = max(self.trial, when_stops + machine.till_billing(when_stops))
-            bill = int(math.ceil(float(billing_end - billing_start) / machine.BILLING_UNIT))
-            self.billed += bill
-            return bill
+        self.machines[category].remove(machine)
+        when_stops = max(self.now, machine.busy_till)
+        billing_start = machine.running_since
+        billing_end = when_stops + machine.till_billing(when_stops)
+        bill = int(math.ceil(float(billing_end - billing_start) / machine.BILLING_UNIT))
+        self.billed += bill
+        return bill
 
     def evaluate(self):
-        for category in ['default', 'export', 'url']:
-            self.process_events(category)
+        for category in self.categories:
             while self.machines[category]:
-                self.info('evaluating %d' % len(self.machines[category]))
                 machine = self.machines[category][0]
                 self.terminate(machine, category)
-            if self.overwait:
-                return -1
         return self.billed + self.penalty
 
 
-def read_events(fd):
-    common = r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) (?P<hour>\d\d):(?P<minute>\d\d):(?P<second>\d\d) '
-    cmd_re = re.compile(common + r'(?P<cmd>[^ ]+) (?P<category>\w+)')
-    job_re = re.compile(common + r'(?P<guid>[^ ]+) (?P<category>\w+) (?P<elapsed>\d+\.\d+)')
-
-    common_new = r'^(?P<timestamp>\d{10}) '
-    cmd_re_new = re.compile(common_new + r'(?P<cmd>[^ ]+) (?P<category>\w+)')
-    job_re_new = re.compile(common_new + r'(?P<elapsed>\d+\.\d+) (?P<guid>[^ ]+) (?P<category>\w+)')
-
+def read_events(fd, legacy):
+    if legacy:
+        common = r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) (?P<hour>\d\d):(?P<minute>\d\d):(?P<second>\d\d) '
+        cmd_re = re.compile(common + r'(?P<cmd>[^ ]+) (?P<category>\w+)')
+        job_re = re.compile(common + r'(?P<guid>[^ ]+) (?P<category>\w+) (?P<elapsed>\d+\.\d+)')
+    else:
+        common = r'^(?P<timestamp>\d{10}) '
+        cmd_re = re.compile(common + r'(?P<cmd>[^ ]+) (?P<category>\w+)')
+        job_re = re.compile(common + r'(?P<elapsed>\d+\.\d+) (?P<guid>[^ ]+) (?P<category>\w+)')
     while True:
         line = fd.readline()
         if not line:
             break
-
-        n = job_re_new.match(line)
-        if n:
-            yield Job(n.groupdict())
-            continue
         m = job_re.match(line)
         if m:
-            yield Job(m.groupdict())
-            continue
-        n = cmd_re_new.match(line)
-        if n:
-            yield Command(n.groupdict())
+            yield Job(m.groupdict(), legacy)
             continue
         m = cmd_re.match(line)
         if m:
-            yield Command(m.groupdict())
-
-
-def parse_arguments():
-    parser = argparse.ArgumentParser(description='Prezi scale contest evaluator')
-    parser.add_argument('-d', '--debug', dest='debug', action='store_true', default=False, help='turn on debugging')
-    return parser.parse_known_args()
+            yield Command(m.groupdict(), legacy)
 
 
 def set_logger():
     logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
 
-def main():
-    args, rest = parse_arguments()
-    if args.debug:
+def main(file, debug=False, legacy=False):
+    if debug:
         set_logger()
-    state = State()
-    with open(rest[0]) if rest else sys.stdin as fd:
-        for event in read_events(fd):
+    state = State(legacy)
+    with open(file) as fd:
+        for event in read_events(fd, legacy):
             state.receive(event)
             if state.overwait:
                 break
     print state.evaluate()
-    sys.exit(1 if state.overwait else 0)
-
-if __name__ == '__main__':
-    main()
