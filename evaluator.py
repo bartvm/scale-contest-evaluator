@@ -73,8 +73,7 @@ class Machine(object):
         self.guid = str(uuid.uuid1())
 
     def __cmp__(self, other):
-        now = self.world.now
-        return cmp(self.till_billing(now), other.till_billing(now))
+        return cmp(self.guid, other.guid)
 
     @property
     def running_since(self):
@@ -111,8 +110,8 @@ class State(WithLog):
         self.penalty = 0
         self.trial = None
         self.overwait = False
-        self.jobs = {'url': [], 'general': [], 'export': []}
-        self.machines = {'url': [], 'general': [], 'export': []}
+        self.jobs = {'url': [], 'default': [], 'export': []}
+        self.machines = {'url': [], 'default': [], 'export': []}
 
     @property
     def now(self):
@@ -145,7 +144,7 @@ class State(WithLog):
 
     def terminate(self, machine, category):
         machine.terminated = True
-        bill = self.bill(category=category)
+        bill = self.bill(machine, category)
         self.info('terminate %d %d %d %s' % (machine.running_since, machine.active_from, bill, machine.guid))
 
     def rnd_machine(self, category):
@@ -188,19 +187,9 @@ class State(WithLog):
     def penalize(self, waiting_time):
         self.penalty += (waiting_time - 5) / float(40)
 
-    def bill(self, category=None):
-        bill_previous = self.billed
-        if category:
-            all_terminated = filter(lambda m: m.terminated, self.machines[category])
-            for machine in all_terminated:
-                self.bill_it(machine)
-            for machine in all_terminated:
-                self.machines[category].remove(machine)
-        else:
-            for _, machines in self.machines.items():
-                for machine in machines:
-                    self.bill_it(machine)
-        return self.billed - bill_previous
+    def bill(self, machine, category):
+        self.machines[category].remove(machine)
+        return self.bill_it(machine)
 
     def bill_it(self, machine):
         """ Computes the cost of a single virtual machine. """
@@ -208,12 +197,16 @@ class State(WithLog):
             when_stops = max(self.now, machine.busy_till)
             billing_start = max(self.trial, machine.running_since)
             billing_end = max(self.trial, when_stops + machine.till_billing(when_stops))
-            self.billed += int(math.ceil(float(billing_end - billing_start) / machine.BILLING_UNIT))
+            bill = int(math.ceil(float(billing_end - billing_start) / machine.BILLING_UNIT))
+            self.billed += bill
+            return bill
 
     def evaluate(self):
-        for category in ['general', 'export', 'url']:
+        for category in ['default', 'export', 'url']:
             self.process_events(category)
-            for machine in self.machines[category]:
+            while self.machines[category]:
+                self.info('evaluating %d' % len(self.machines[category]))
+                machine = self.machines[category][0]
                 self.terminate(machine, category)
             if self.overwait:
                 return -1
