@@ -209,13 +209,16 @@ def set_logger():
     logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
 
-def main(file, debug=False, legacy=False):
+def main(debug=False, legacy=False):
     if debug:
         set_logger()
     state = State(legacy)
-    with open(file) as fd:
+    with sys.stdin as fd:
         for event in read_events(fd, legacy):
             state.receive(event)
             if state.overwait:
                 break
     print state.evaluate()
+
+if __name__ == '__main__':
+    main()
