@@ -1,4 +1,5 @@
 import argparse
+import collections
 import heapq
 import logging
 from matplotlib import pyplot as plt
@@ -240,25 +241,34 @@ class Statistics(WithLog):
         self.beginning = self.world.now
         self.figure, self.axes = plt.subplots(2, 2)
         self.axes = self.axes.flatten()
-        self.arrivals = dict((category, self.axes[0].plot([], [])[0])
-                             for category in CATEGORIES)
+        self.arrival_history = dict((category,
+                                     collections.deque(maxlen=self.UPDATE_INTERVAL))
+                                    for category in CATEGORIES)
+        self.arrival_plots = dict((category, self.axes[0].plot([], [])[0])
+                                  for category in CATEGORIES)
+        self.machine_plots = dict((category, self.axes[1].plot([], [])[0])
+                                  for category in CATEGORIES)
 
     def add_point(self, line, new_data):
         line.set_xdata(numpy.append(line.get_xdata(), new_data[0]))
         line.set_ydata(numpy.append(line.get_ydata(), new_data[1]))
-        self.update_plots()
 
     def update_plots(self):
         for axis in self.axes:
             axis.relim()
             axis.autoscale_view()
-        if not self.world.now % self.UPDATE_INTERVAL:
-            plt.draw()
+        plt.draw()
 
     def step(self):
         for category in CATEGORIES:
-            self.add_point(self.arrivals[category],
-                           (self.world.now, len(self.world.jobs[category])))
+            self.arrival_history[category].append(len(self.world.jobs[category]))
+        if not self.world.now % self.UPDATE_INTERVAL:
+            for category in CATEGORIES:
+                self.add_point(self.arrival_plots[category],
+                               (self.world.now, numpy.mean(self.arrival_history[category])))
+                self.add_point(self.machine_plots[category],
+                               (self.world.now, len(self.world.machines[category])))
+            self.update_plots()
 
 
 ### Simulating input
