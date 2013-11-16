@@ -1,6 +1,7 @@
 import argparse
 import heapq
 import logging
+from matplotlib import pyplot as plt
 import random
 import scipy
 from scipy import stats
@@ -18,14 +19,15 @@ MACHINE_INACTIVE = 120
 
 ### Base classes
 class Event(object):
+    """Represents either a job or a command.
+    """
     def __init__(self, data_dict):
         self.timestamp = int(data_dict['timestamp'])
 
     def __cmp__(self, other):
+        """Compare events by their timespan so that they can be sorted.
+        """
         return cmp(self.timestamp, other.timestamp)
-
-    def __str__(self):
-        return str(self.timestamp)
 
 
 class Job(Event):
@@ -35,6 +37,10 @@ class Job(Event):
         self.duration = float(data_dict['duration'])
         self.guid = data_dict['guid']
 
+    def __str__(self):
+        return ' '.join(map(str, [self.timestamp, self.duration,
+                                  self.guid, self.category]))
+
 
 class Command(Event):
     def __init__(self, data_dict):
@@ -42,15 +48,34 @@ class Command(Event):
         self.category = data_dict['category']
         self.cmd = data_dict['cmd']
 
+    def __str__(self):
+        return ' '.join(map(str, [self.timestamp, self.cmd, self.category]))
+
 
 ### The algorithm
 class Scale(object):
     """The actual algorithm
+
+    TODO: Implement everything.
+
+    TODO: The algorithm needs to keep track of the jobs, and estimate activity
+    using a moving average (should probably use deque and numpy). This can
+    be combined with the extracted 24-hour dynamics to forecast activity.
+
+    TODO: This needs to be used then to estimate the number of machines required
+    half an hour from now. To get this estimate we need to use approximations
+    (see Wikipedia M/G/k queue) or we need to use KDE to estimate the
+    waiting time distribution for specific arrival rates and servers.
     """
     def __init__(self, number_of_jobs):
         self.now = 0
 
     def startup(self, event):
+        """This gets called only by the very first event.
+
+        TODO: Maybe look at the day (Saturday, Sunday, holiday?) and determine
+        the number of servers we're going to start with.
+        """
         starting_time = event.timestamp - MACHINE_INACTIVE
         for category in CATEGORIES:
             data_dict = dict(zip(('timestamp', 'category', 'cmd'),
@@ -58,16 +83,25 @@ class Scale(object):
             self.events.extend([Command(data_dict)] * 40)
 
     def receive(self, event):
+        """Receives an event and does algorithmic magic.
+
+        TODO: Everything (see class description)
+        """
         self.events = [event]
         if not self.now:
             self.startup(event)
         self.now = event.timestamp
-        heapq.heapify(self.events)
-        return self.events
+        return sorted(self.events)
 
 
 ### Scoring and measurement
 class Evaluator(object):
+    """Simulate the result of a set of events and commands. Returns the final
+    number of machine hours used plus the penalty incurred.
+
+    TODO: Might need to test it again to see if it does
+    exactly what it should do.
+    """
     def __init__(self):
         self.now = 0
         self.billed = 0
@@ -78,6 +112,9 @@ class Evaluator(object):
         self.statistics = Statistics(self)
 
     def receive(self, event):
+        """Processes each event and also updates the time and
+        asks for statistics.
+        """
         if self.now != event.timestamp:
             self.statistics.step()
             self.jobs = dict((category, []) for category in CATEGORIES)
@@ -97,10 +134,17 @@ class Evaluator(object):
         heapq.heappush(self.machines[category], machine)
 
     def terminate(self, machine, category):
-        machine.terminated = True
-        self.bill(machine, category)
+        """Shuts the machine down by removing it from the list and asking
+        for the bill.
+        """
+        self.machines[category].remove(machine)
+        self.bill(machine)
 
     def process_event(self, job):
+        """Sends each event to a virtual machine. First tries to find a machine
+        close to the billing cycle, otherwise the machine that is available
+        earliest.
+        """
         # Find machine closest to billing cycle with enough time to run job
         machine_priority = []
         for machine in self.machines[job.category]:
@@ -125,12 +169,17 @@ class Evaluator(object):
     def penalize(self, waiting_time):
         self.penalty += (waiting_time - 5) / float(40)
 
-    def bill(self, machine, category):
-        self.machines[category].remove(machine)
+    def bill(self, machine):
+        """Charges the machine hours and adds it to the bill.
+        """
         when_stops = max(self.now, machine.busy_till)
         self.billed += (when_stops - machine.running_since) / BILLING_UNIT + 1
 
     def evaluate(self):
+        """Shuts down all the machines that are still one and adds up the
+        bill and the penalties. If a process had to wait more than 2 minutes
+        the score is 0.
+        """
         for category in CATEGORIES:
             while self.machines[category]:
                 machine = self.machines[category][0]
@@ -142,12 +191,12 @@ class Evaluator(object):
 
 
 class Machine(object):
+    """Represents a virtual machine.
+    """
     def __init__(self, booted, world):
         self.active_from = booted + MACHINE_INACTIVE
         self.busy_till = 0
         self.world = world
-        self.terminated = False
-        self.guid = str(uuid.uuid1())
 
     @property
     def running_since(self):
@@ -166,6 +215,10 @@ class Machine(object):
 
 ### Statistics
 class Statistics(object):
+    """Displays statistics every second about the state of the model.
+
+    TODO: Plot penalties, waiting time distributions, activity, etc.
+    """
     def __init__(self, world):
         self.world = world
 
@@ -187,29 +240,37 @@ class Simulation(object):
         self.now = int(time.time()) - random.randint(0, 7 * 24 * 60 * 60)
         self.arrival_rates = arrival_rates
 
-    def load_service_distribution(self, input):
+    def load_service_distribution(self, f):
         """Loads service time distributions from a log file.
         """
         self.service_times = dict((category, []) for category in CATEGORIES)
-        for job in parse_input(input):
-            self.service_times[job.category].append(job.duration)
+        with open(f) as f:
+            f.readline()
+            for job in parse(f):
+                self.service_times[job.category].append(job.duration)
 
     def __iter__(self):
         return self
 
-    def next(self):
-        """Returns randomly generated jobs infinitely.
+    def generator(self):
+        """Generator that creates random jobs.
         """
-        for category in CATEGORIES:
-            number_of_arrivals = scipy.stats.poisson.rvs(
-                self.arrival_rates[category]
-            )
-            for i in range(number_of_arrivals):
-                service_time = random.choice(self.service_times[category])
-                guid = str(uuid.uuid1())
-                data_dict = dict(zip(('timestamp', 'duration', 'guid', 'category'),
-                                     (self.now, service_time, guid, category)))
-                return Job(data_dict)
+        while True:
+            jobs = []
+            for category in CATEGORIES:
+                number_of_arrivals = scipy.stats.poisson.rvs(
+                    self.arrival_rates[category]
+                )
+                for i in range(number_of_arrivals):
+                    service_time = random.choice(self.service_times[category])
+                    guid = str(uuid.uuid1())
+                    data_dict = dict(zip(('timestamp', 'duration', 'guid',
+                                          'category'), (self.now, service_time,
+                                                        guid, category)))
+                    jobs.append(Job(data_dict))
+            random.shuffle(jobs)
+            for job in jobs:
+                yield job
             self.now += 1
 
 
