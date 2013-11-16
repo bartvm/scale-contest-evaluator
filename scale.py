@@ -62,10 +62,11 @@ class Scale(object):
     using a moving average (should probably use deque and numpy). This can
     be combined with the extracted 24-hour dynamics to forecast activity.
 
-    TODO: This needs to be used then to estimate the number of machines required
-    half an hour from now. To get this estimate we need to use approximations
-    (see Wikipedia M/G/k queue) or we need to use KDE to estimate the
-    waiting time distribution for specific arrival rates and servers.
+    TODO: This needs to be used then to estimate the number of machines
+    required half an hour from now. To get this estimate we need to use
+    approximations (see Wikipedia M/G/k queue) or we need to use KDE to
+    estimate the waiting time distribution for specific arrival rates
+    and servers.
     """
     def __init__(self, number_of_jobs):
         self.now = 0
@@ -232,12 +233,14 @@ class Simulation(object):
     times from a data set. Behaves like an iterator, returning Job objects
     at each call.
     """
-    def __init__(self, arrival_rates):
+    def __init__(self, time_frame, arrival_rates):
         """Initiate this iterator.
 
         Takes a dictionary of arrival rates, {'url': 2.1, ...}.
         """
         self.now = int(time.time()) - random.randint(0, 7 * 24 * 60 * 60)
+        self.start = self.now
+        self.end = self.start + time_frame
         self.arrival_rates = arrival_rates
 
     def load_service_distribution(self, f):
@@ -255,7 +258,7 @@ class Simulation(object):
     def generator(self):
         """Generator that creates random jobs.
         """
-        while True:
+        while self.now < self.end:
             jobs = []
             for category in CATEGORIES:
                 number_of_arrivals = scipy.stats.poisson.rvs(
@@ -293,6 +296,8 @@ def main(file=None):
 
 
 def parse(f):
+    """Parses a file or input and returns jobs.
+    """
     while True:
         line = f.readline()
         if not line:
