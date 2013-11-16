@@ -1,6 +1,7 @@
 import argparse
 import collections
 import heapq
+import itertools
 import logging
 from matplotlib import pyplot as plt
 import numpy
@@ -47,6 +48,7 @@ class Job(Event):
         self.category = data_dict['category']
         self.duration = float(data_dict['duration'])
         self.guid = data_dict['guid']
+        self.waiting_time = 0
 
     def __str__(self):
         return ' '.join(map(str, [self.timestamp, self.duration,
@@ -67,7 +69,7 @@ class Command(Event):
 class Scale(object):
     """The actual algorithm
 
-    TODO: Implement everything.
+    TODO: Everything, basically.
 
     TODO: The algorithm needs to keep track of the jobs, and estimate activity
     using a moving average (should probably use deque and numpy). This can
@@ -80,29 +82,44 @@ class Scale(object):
     and servers.
     """
     def __init__(self):
+        """TODO: This is where the algorithm should store the past data it
+        needs to do its magic
+        """
         self.now = 0
+        self.events = []
 
     def startup(self, event):
-        """This gets called only by the very first event.
+        """This gets called only by the very first event and makes sure that
+        servers are started up by the time the first jobs come in.
 
         TODO: Maybe look at the day (Saturday, Sunday, holiday?) and determine
         the number of servers we're going to start with.
         """
-        starting_time = event.timestamp - MACHINE_INACTIVE
+        startup_time = event.timestamp - MACHINE_INACTIVE
+        startup_number = {
+            'url': 5,
+            'default': 40,
+            'export': 40
+        }
         for category in CATEGORIES:
             data_dict = dict(zip(('timestamp', 'category', 'cmd'),
-                                 (starting_time, category, 'launch')))
-            self.events.extend([Command(data_dict)] * 40)
+                                 (startup_time, category, 'launch')))
+            self.events.extend([Command(data_dict)] * startup_number[category])
 
     def receive(self, event):
         """Receives an event and does algorithmic magic.
 
-        TODO: Everything (see class description)
+        Adds the machine commands (launch, terminate) to the self.events list.
+
+        TODO: Everything (this is where the algorithm should do its work)
         """
         self.events = [event]
         if not self.now:
             self.startup(event)
         self.now = event.timestamp
+
+        # This is where the algorithm should go
+
         return sorted(self.events)
 
 
@@ -144,6 +161,8 @@ class Evaluator(object):
                     self.terminate(closest[0], event.category)
 
     def launch(self, machine, category):
+        """Launches a new machine.
+        """
         heapq.heappush(self.machines[category], machine)
 
     def terminate(self, machine, category):
@@ -183,6 +202,8 @@ class Evaluator(object):
                 self.overwait = True
 
     def penalize(self, waiting_time):
+        """Calculates the penalty incurred.
+        """
         self.penalty += (waiting_time - 5) / float(40)
 
     def bill(self, machine):
@@ -231,23 +252,33 @@ class Machine(object):
 
 ### Statistics
 class Statistics(WithLog):
-    UPDATE_INTERVAL = 300
+    UPDATE_INTERVAL = 900
     """Displays statistics every second about the state of the model.
 
-    TODO: Plot penalties, waiting time distributions, activity, etc.
+    TODO: Code needs to be cleaned up a bit so that the axes of all the plots
+    are sensible, and so that different plots can easily be moved around.
+
+    TODO: Labels for the graphs need to show the time (in hours) + day
+
+    TODO: Plot penalties incurred, machine hours billed, etc.
     """
     def __init__(self, world):
         self.world = world
-        self.beginning = self.world.now
+        self.beginning = 0
         self.figure, self.axes = plt.subplots(2, 2)
         self.axes = self.axes.flatten()
         self.arrival_history = dict((category,
-                                     collections.deque(maxlen=self.UPDATE_INTERVAL))
-                                    for category in CATEGORIES)
+                                     collections.deque(
+                                         maxlen=self.UPDATE_INTERVAL
+                                     )) for category in CATEGORIES)
+        self.waiting_times = dict((category, collections.deque())
+                                  for category in CATEGORIES)
         self.arrival_plots = dict((category, self.axes[0].plot([], [])[0])
                                   for category in CATEGORIES)
         self.machine_plots = dict((category, self.axes[1].plot([], [])[0])
                                   for category in CATEGORIES)
+        self.waiting_time_plots = dict((category, self.axes[2].plot([], [])[0])
+                                       for category in CATEGORIES)
 
     def add_point(self, line, new_data):
         line.set_xdata(numpy.append(line.get_xdata(), new_data[0]))
@@ -257,17 +288,36 @@ class Statistics(WithLog):
         for axis in self.axes:
             axis.relim()
             axis.autoscale_view()
+        self.axes[3].set_ylim([0, 1000])
         plt.draw()
 
     def step(self):
+        if not self.beginning:
+            self.beginning = self.world.now
+        # Every second
         for category in CATEGORIES:
-            self.arrival_history[category].append(len(self.world.jobs[category]))
-        if not self.world.now % self.UPDATE_INTERVAL:
+            self.arrival_history[category].append(
+                len(self.world.jobs[category])
+            )
+            for job in self.world.jobs[category]:
+                self.waiting_times[category].append(job.waiting_time)
+        # Every update interval
+        if not (self.world.now - self.beginning) % self.UPDATE_INTERVAL \
+           and (self.world.now - self.beginning):
             for category in CATEGORIES:
                 self.add_point(self.arrival_plots[category],
-                               (self.world.now, numpy.mean(self.arrival_history[category])))
+                               (self.world.now,
+                                numpy.mean(self.arrival_history[category])))
                 self.add_point(self.machine_plots[category],
-                               (self.world.now, len(self.world.machines[category])))
+                               (self.world.now,
+                                len(self.world.machines[category])))
+                self.add_point(self.waiting_time_plots[category],
+                               (self.world.now,
+                                numpy.mean(self.waiting_times[category])))
+            self.axes[3].clear()
+            self.axes[3].hist(list(itertools.chain(*self.waiting_times.itervalues())), range=(0, 120), bins=120)
+            for queue in self.waiting_times.itervalues():
+                queue.clear()
             self.update_plots()
 
 
@@ -322,6 +372,14 @@ class Simulation(object):
 
 ### Program logic
 def main(file=None, debug=False):
+    """Runs the algorithm and passes it to the simulation.
+
+    TODO: Easily turn graphs on and off
+
+    TODO: Easily run the algorithm on simulated data.
+
+    TODO: Easily save recorde data to files/pass scores to GA.
+    """
     args, rest = parse_arguments()
     if file:
         rest = [file]
@@ -331,20 +389,22 @@ def main(file=None, debug=False):
         scale = Scale()
         evaluator = Evaluator()
         jobs = parse(f)
-        L = []
-        thread.start_new_thread(input_thread, (L,))
+        abort = []
+        thread.start_new_thread(input_thread, (abort,))
         for job in jobs:
             for event in scale.receive(job):
                 evaluator.receive(event)
-            if L:
+            if abort:
                 break
         print 'Final score: ' + str(evaluator.evaluate()) + \
               '\nPlease press enter.'
 
 
-def input_thread(L):
+def input_thread(abort):
+    """This thread runs separately in order to respond to any keypress.
+    """
     raw_input('Press enter to interrupt...\n')
-    L.append(None)
+    abort.append(None)
 
 
 def parse(f):
