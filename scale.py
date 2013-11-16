@@ -2,10 +2,12 @@ import argparse
 import heapq
 import logging
 from matplotlib import pyplot as plt
+import numpy
 import random
 import scipy
 from scipy import stats
 import sys
+import thread
 import time
 import uuid
 
@@ -15,6 +17,14 @@ MAX_QUEUE_TIME = 5
 MAX_PENALTY_TIME = 120
 BILLING_UNIT = 3600
 MACHINE_INACTIVE = 120
+
+
+### Allow classes to log
+class WithLog(object):  # This is just for logging
+    log = logging.getLogger('scale')
+
+    def info(self, *args):
+        self.log.info(*args)
 
 
 ### Base classes
@@ -68,7 +78,7 @@ class Scale(object):
     estimate the waiting time distribution for specific arrival rates
     and servers.
     """
-    def __init__(self, number_of_jobs):
+    def __init__(self):
         self.now = 0
 
     def startup(self, event):
@@ -117,9 +127,10 @@ class Evaluator(object):
         asks for statistics.
         """
         if self.now != event.timestamp:
-            self.statistics.step()
-            self.jobs = dict((category, []) for category in CATEGORIES)
             self.now = event.timestamp
+            if self.now and isinstance(event, Job):
+                self.statistics.step()
+                self.jobs = dict((category, []) for category in CATEGORIES)
         if isinstance(event, Job):
             heapq.heappush(self.jobs[event.category], event)
             self.process_event(event)
@@ -157,13 +168,16 @@ class Evaluator(object):
             if machine.is_available(job.timestamp + MAX_QUEUE_TIME):
                 machine.busy_till = max(machine.available_from,
                                         job.timestamp) + job.duration
+                job.waiting_time = max(machine.available_from,
+                                       job.timestamp) - job.timestamp
                 break
         # Minimize penalty by finding first machine available
         else:
             machine = min(self.machines[job.category],
                           key=lambda machine: machine.available_from)
             machine.busy_till = machine.available_from + job.duration
-            self.penalize(machine.available_from - job.timestamp)
+            job.waiting_time = machine.available_from - job.timestamp
+            self.penalize(job.waiting_time)
             if not machine.available_from - job.timestamp < MAX_PENALTY_TIME:
                 self.overwait = True
 
@@ -215,16 +229,36 @@ class Machine(object):
 
 
 ### Statistics
-class Statistics(object):
+class Statistics(WithLog):
+    UPDATE_INTERVAL = 300
     """Displays statistics every second about the state of the model.
 
     TODO: Plot penalties, waiting time distributions, activity, etc.
     """
     def __init__(self, world):
         self.world = world
+        self.beginning = self.world.now
+        self.figure, self.axes = plt.subplots(2, 2)
+        self.axes = self.axes.flatten()
+        self.arrivals = dict((category, self.axes[0].plot([], [])[0])
+                             for category in CATEGORIES)
+
+    def add_point(self, line, new_data):
+        line.set_xdata(numpy.append(line.get_xdata(), new_data[0]))
+        line.set_ydata(numpy.append(line.get_ydata(), new_data[1]))
+        self.update_plots()
+
+    def update_plots(self):
+        for axis in self.axes:
+            axis.relim()
+            axis.autoscale_view()
+        if not self.world.now % self.UPDATE_INTERVAL:
+            plt.draw()
 
     def step(self):
-        pass
+        for category in CATEGORIES:
+            self.add_point(self.arrivals[category],
+                           (self.world.now, len(self.world.jobs[category])))
 
 
 ### Simulating input
@@ -248,7 +282,6 @@ class Simulation(object):
         """
         self.service_times = dict((category, []) for category in CATEGORIES)
         with open(f) as f:
-            f.readline()
             for job in parse(f):
                 self.service_times[job.category].append(job.duration)
 
@@ -278,26 +311,36 @@ class Simulation(object):
 
 
 ### Program logic
-def main(file=None):
+def main(file=None, debug=False):
     args, rest = parse_arguments()
     if file:
         rest = [file]
-    if args.debug:
+    if args.debug or debug:
         set_logger()
     with open(rest[0]) if rest else sys.stdin as f:
-        number_of_jobs = int(f.readline().strip())
-        scale = Scale(number_of_jobs)
+        scale = Scale()
         evaluator = Evaluator()
         jobs = parse(f)
+        L = []
+        thread.start_new_thread(input_thread, (L,))
         for job in jobs:
             for event in scale.receive(job):
                 evaluator.receive(event)
-        print evaluator.evaluate()
+            if L:
+                break
+        print 'Final score: ' + str(evaluator.evaluate()) + \
+              '\nPlease press enter.'
+
+
+def input_thread(L):
+    raw_input('Press enter to interrupt...\n')
+    L.append(None)
 
 
 def parse(f):
     """Parses a file or input and returns jobs.
     """
+    f.readline()
     while True:
         line = f.readline()
         if not line:
