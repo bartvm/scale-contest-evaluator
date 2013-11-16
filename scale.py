@@ -3,6 +3,7 @@ import collections
 import heapq
 import itertools
 import logging
+import matplotlib
 from matplotlib import pyplot as plt
 import numpy
 import random
@@ -19,6 +20,54 @@ MAX_QUEUE_TIME = 5
 MAX_PENALTY_TIME = 120
 BILLING_UNIT = 3600
 MACHINE_INACTIVE = 120
+
+### Plotting settings
+lines = {
+    'linewidth': 1.0,
+    'antialiased': True
+}
+matplotlib.rc('lines', **lines)
+
+patch = {
+    'linewidth': 0.5,
+    'facecolor': '#348ABD',
+    'edgecolor': '#eeeeee',
+    'antialiased': True
+}
+matplotlib.rc('patch', **patch)
+
+font = {
+    'family': 'monospace',
+    'size': 10,
+    'monospace': 'Andale Mono, Nimbus Mono L, Courier New, ' +
+                 'Courier, Fixed, Terminal, monospace'
+}
+matplotlib.rc('font', **font)
+
+axes = {
+    'facecolor': '#eeeeee',
+    'edgecolor': '#bcbcbc',
+    'linewidth': 1,
+    'grid': True,
+    'titlesize': 'x-large',
+    'labelsize': 'large',
+    'labelcolor': '#555555',
+    'axisbelow': True,
+    'color_cycle': ['348ABD', '#7A68A6', '#A60628', '#467821',
+                    '#CF4457', '#188487', '#E24A33']
+}
+matplotlib.rc('axes', **axes)
+
+figure = {
+    'figsize': '14, 10',
+    'facecolor': '0.85',
+    'edgecolor': '0.5',
+    'subplot.left': '0.05',
+    'subplot.right': '0.95',
+    'subplot.top': '0.95',
+    'subplot.bottom': '0.05'
+}
+matplotlib.rc('figure', **figure)
 
 
 ### Allow classes to log
@@ -265,14 +314,16 @@ class Statistics(WithLog):
     def __init__(self, world):
         self.world = world
         self.beginning = 0
+        plt.ion()
         self.figure, self.axes = plt.subplots(2, 2)
         self.axes = self.axes.flatten()
-        self.arrival_history = dict((category,
-                                     collections.deque(
-                                         maxlen=self.UPDATE_INTERVAL
-                                     )) for category in CATEGORIES)
+        self.arrivals = dict((category,
+                              collections.deque(maxlen=self.UPDATE_INTERVAL))
+                             for category in CATEGORIES)
         self.waiting_times = dict((category, collections.deque())
                                   for category in CATEGORIES)
+        self.durations = dict((category, collections.deque())
+                              for category in CATEGORIES)
         self.arrival_plots = dict((category, self.axes[0].plot([], [])[0])
                                   for category in CATEGORIES)
         self.machine_plots = dict((category, self.axes[1].plot([], [])[0])
@@ -288,6 +339,7 @@ class Statistics(WithLog):
         for axis in self.axes:
             axis.relim()
             axis.autoscale_view()
+        self.axes[3].set_xlim([0, 120])
         self.axes[3].set_ylim([0, 1000])
         plt.draw()
 
@@ -296,18 +348,20 @@ class Statistics(WithLog):
             self.beginning = self.world.now
         # Every second
         for category in CATEGORIES:
-            self.arrival_history[category].append(
+            self.arrivals[category].append(
                 len(self.world.jobs[category])
             )
             for job in self.world.jobs[category]:
                 self.waiting_times[category].append(job.waiting_time)
+            for job in self.world.jobs[category]:
+                self.durations[category].append(job.duration)
         # Every update interval
         if not (self.world.now - self.beginning) % self.UPDATE_INTERVAL \
            and (self.world.now - self.beginning):
             for category in CATEGORIES:
                 self.add_point(self.arrival_plots[category],
                                (self.world.now,
-                                numpy.mean(self.arrival_history[category])))
+                                numpy.mean(self.arrivals[category])))
                 self.add_point(self.machine_plots[category],
                                (self.world.now,
                                 len(self.world.machines[category])))
@@ -317,6 +371,8 @@ class Statistics(WithLog):
             self.axes[3].clear()
             self.axes[3].hist(list(itertools.chain(*self.waiting_times.itervalues())), range=(0, 120), bins=120)
             for queue in self.waiting_times.itervalues():
+                queue.clear()
+            for queue in self.durations.itervalues():
                 queue.clear()
             self.update_plots()
 
