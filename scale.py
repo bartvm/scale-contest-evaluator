@@ -97,9 +97,9 @@ class Scale(object):
         """
         startup_time = event.timestamp - MACHINE_INACTIVE
         startup_number = {
-            'url': 5,
-            'default': 40,
-            'export': 40
+            'url': 1000,
+            'default': 1000,
+            'export': 1000
         }
         for category in CATEGORIES:
             data_dict = dict(zip(('timestamp', 'category', 'cmd'),
@@ -186,10 +186,10 @@ class Evaluator(object):
         while machine_priority:
             _, machine = heapq.heappop(machine_priority)
             if machine.is_available(job.timestamp + MAX_QUEUE_TIME):
-                machine.busy_till = max(machine.available_from,
-                                        job.timestamp) + job.duration
                 job.waiting_time = max(machine.available_from,
                                        job.timestamp) - job.timestamp
+                machine.busy_till = max(machine.available_from,
+                                        job.timestamp) + job.duration
                 break
         # Minimize penalty by finding first machine available
         else:
@@ -305,6 +305,7 @@ class Statistics(WithLog):
         if not (self.world.now - self.beginning) % self.UPDATE_INTERVAL \
            and (self.world.now - self.beginning):
             for category in CATEGORIES:
+                # print max(self.waiting_times[category])
                 self.add_point(self.arrival_plots[category],
                                (self.world.now,
                                 numpy.mean(self.arrival_history[category])))
