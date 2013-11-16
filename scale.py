@@ -97,9 +97,9 @@ class Scale(object):
         """
         startup_time = event.timestamp - MACHINE_INACTIVE
         startup_number = {
-            'url': 1000,
-            'default': 1000,
-            'export': 1000
+            'url': 5,
+            'default': 40,
+            'export': 40
         }
         for category in CATEGORIES:
             data_dict = dict(zip(('timestamp', 'category', 'cmd'),
@@ -305,7 +305,6 @@ class Statistics(WithLog):
         if not (self.world.now - self.beginning) % self.UPDATE_INTERVAL \
            and (self.world.now - self.beginning):
             for category in CATEGORIES:
-                # print max(self.waiting_times[category])
                 self.add_point(self.arrival_plots[category],
                                (self.world.now,
                                 numpy.mean(self.arrival_history[category])))
