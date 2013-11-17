@@ -564,7 +564,7 @@ class Statistics(WithLog):
         self.world = world
         self.world.bind_to(self.step)
         self.beginning = 0
-        self.figure, self.axes = plt.subplots(2, 2)
+        self.figure, self.axes = plt.subplots(2, 2, figsize=(14, 10))
         self.suptitle = plt.suptitle(
             'Schudeling algorithm: %s, Algorithm failed: %s'
             % (self.world.scheduling, self.world.overwait)
