@@ -570,6 +570,10 @@ class Statistics(WithLog):
         self.world.bind_to(self.step)
         self.beginning = 0
         self.figure, self.axes = plt.subplots(2, 2)
+        self.suptitle = plt.suptitle(
+            'Schudeling algorithm: %s, Algorithm failed: %s'
+            % (self.world.scheduling, self.world.overwait)
+        )
         self.axes = self.axes.flatten()
         self.arrivals = dict((category, collections.deque())
                              for category in CATEGORIES)
@@ -588,7 +592,7 @@ class Statistics(WithLog):
 
         Args:
             line: A pyplot line
-            new_data: An (x, y) list or tuple with a new point to add
+            new_data: An (x, y)/[x, y] list or tuple with a new point to add
                 to this line
         """
         line.set_xdata(numpy.append(line.get_xdata(), new_data[0]))
@@ -601,8 +605,9 @@ class Statistics(WithLog):
         for axis in self.axes:
             axis.relim()
             axis.autoscale_view()
-        self.axes[3].set_xlim([0, 120])
+        self.axes[3].set_xlim([0, 60])
         self.axes[3].set_ylim([0, 1000])
+        self.axes[3].plot([5, 5], [0, 1000], c='#A60628', ls=':')
         plt.draw()
 
     def update(self):
@@ -626,13 +631,18 @@ class Statistics(WithLog):
         self.axes[3].clear()
         self.axes[3].hist(
             list(itertools.chain(*self.waiting_times.itervalues())),
-            range=(0, 120), bins=120
+            range=(0, 60), bins=60
         )
         for queue in self.waiting_times.itervalues():
             queue.clear()
         for queue in self.arrivals.itervalues():
             queue.clear()
         self.update_plots()
+        if self.world.overwait:
+            self.suptitle.set_text(
+                'Schudeling algorithm: %s, Algorithm failed: %s'
+                % (self.world.scheduling, self.world.overwait)
+            )
 
     def step(self):
         """This function gets called at every new time step. At this point
