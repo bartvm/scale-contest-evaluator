@@ -36,10 +36,7 @@ patch = {
 matplotlib.rc('patch', **patch)
 
 font = {
-    'family': 'monospace',
-    'size': 10,
-    'monospace': 'Andale Mono, Nimbus Mono L, Courier New, ' +
-                 'Courier, Fixed, Terminal, monospace'
+    'size': 10
 }
 matplotlib.rc('font', **font)
 
@@ -59,7 +56,6 @@ matplotlib.rc('axes', **axes)
 
 figure = {
     'figsize': '14, 10',
-    'facecolor': '0.85',
     'edgecolor': '0.5',
     'subplot.left': '0.05',
     'subplot.right': '0.95',
