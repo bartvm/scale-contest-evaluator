@@ -398,13 +398,15 @@ class Evaluator(object):
         """
         if self.scheduling == 'uniform':
             machine = random.choice(self.machines[job.category])
-            machine.busy_till = machine.available_from + job.duration
+            machine.busy_till = \
+                max(machine.available_from, job.timestamp) + job.duration
             job.waiting_time = \
                 max(machine.available_from, job.timestamp) - job.timestamp
         elif self.scheduling == 'fifo':
             machine = min(self.machines[job.category],
                           key=lambda machine: machine.available_from)
-            machine.busy_till = machine.available_from + job.duration
+            machine.busy_till = \
+                max(machine.available_from, job.timestamp) + job.duration
             job.waiting_time = \
                 max(machine.available_from, job.timestamp) - job.timestamp
         else:
