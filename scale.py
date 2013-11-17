@@ -566,7 +566,7 @@ class Statistics(WithLog):
         self.beginning = 0
         self.figure, self.axes = plt.subplots(2, 2, figsize=(14, 10))
         self.suptitle = plt.suptitle(
-            'Schudeling algorithm: %s, Algorithm failed: %s'
+            'Scheduling algorithm: %s, Algorithm failed: %s'
             % (self.world.scheduling, self.world.overwait)
         )
         self.axes = self.axes.flatten()
@@ -635,7 +635,7 @@ class Statistics(WithLog):
         self.update_plots()
         if self.world.overwait:
             self.suptitle.set_text(
-                'Schudeling algorithm: %s, Algorithm failed: %s'
+                'Scheduling algorithm: %s, Algorithm failed: %s'
                 % (self.world.scheduling, self.world.overwait)
             )
 
