@@ -571,8 +571,7 @@ class Statistics(WithLog):
         self.beginning = 0
         self.figure, self.axes = plt.subplots(2, 2)
         self.axes = self.axes.flatten()
-        self.arrivals = dict((category,
-                              collections.deque(maxlen=self.UPDATE_INTERVAL))
+        self.arrivals = dict((category, collections.deque())
                              for category in CATEGORIES)
         self.arrival_plots = dict((category, self.axes[0].plot([], [])[0])
                                   for category in CATEGORIES)
@@ -582,6 +581,7 @@ class Statistics(WithLog):
                                        for category in CATEGORIES)
         self.machine_plots = dict((category, self.axes[1].plot([], [])[0])
                                   for category in CATEGORIES)
+        self.next_update = 0
 
     def add_point(self, line, new_data):
         """Adds a single point to a pyplot line.
@@ -615,7 +615,8 @@ class Statistics(WithLog):
         for category in CATEGORIES:
             self.add_point(self.arrival_plots[category],
                            (self.world.now,
-                            numpy.mean(self.arrivals[category])))
+                            numpy.sum(self.arrivals[category]) /
+                            float(self.UPDATE_INTERVAL)))
             self.add_point(self.machine_plots[category],
                            (self.world.now,
                             len(self.world.machines[category])))
@@ -628,6 +629,8 @@ class Statistics(WithLog):
             range=(0, 120), bins=120
         )
         for queue in self.waiting_times.itervalues():
+            queue.clear()
+        for queue in self.arrivals.itervalues():
             queue.clear()
         self.update_plots()
 
@@ -642,6 +645,7 @@ class Statistics(WithLog):
         """
         if not self.beginning:
             self.beginning = self.world.now + MACHINE_INACTIVE
+            self.next_update = self.beginning + self.UPDATE_INTERVAL
         # Every second
         for category in CATEGORIES:
             self.arrivals[category].append(
@@ -650,8 +654,8 @@ class Statistics(WithLog):
             for job in self.world.jobs[category]:
                 self.waiting_times[category].append(job.waiting_time)
         # Every update interval
-        if not (self.world.now - self.beginning) % self.UPDATE_INTERVAL \
-           and (self.world.now - self.beginning):
+        if self.world.now >= self.next_update:
+            self.next_update = self.next_update + self.UPDATE_INTERVAL
             self.update()
 
 
