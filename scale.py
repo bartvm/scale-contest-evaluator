@@ -55,7 +55,6 @@ axes = {
 matplotlib.rc('axes', **axes)
 
 figure = {
-    'figsize': '14, 10',
     'edgecolor': '0.5',
     'subplot.left': '0.05',
     'subplot.right': '0.95',
