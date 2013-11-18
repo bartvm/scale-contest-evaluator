@@ -1,7 +1,9 @@
+from __future__ import division
 import collections
+from datetime import datetime
 import heapq
-import itertools
 import logging
+import math
 import matplotlib
 from matplotlib import pyplot as plt
 import numpy
@@ -239,7 +241,36 @@ class Scale(object):
         needs to do its magic
         """
         self.now = 0
+        self.last_update = 0
         self.events = []
+        self.correction_values = {
+            'default': 4.0407892579772025,
+            'export': 0.73534155000192447,
+            'url': 3.7580946764684886
+        }
+        self.dynamics = [0.0511657, 0.0524463, 0.0505391,
+                         0.0404101, 0.0341791, 0.0249423, 0.0207979, 0.0224209,
+                         0.0210963, 0.0223503, 0.0210258, 0.0273454, 0.0386998,
+                         0.0494469, 0.0564968, 0.0571024, 0.0567118, 0.0556437,
+                         0.0553419, 0.0547638, 0.0506890, 0.0484105, 0.0421447,
+                         0.0458286]
+        self.history = collections.deque()
+        self.mu = {
+            'url': 0.769972967256,
+            'default': 0.028496851083,
+            'export': 0.0387079390787
+        }
+        self.c = {
+            'url': 7,
+            'default': 40,
+            'export': 30
+        }
+        self.reserve = {
+            'url': 6,
+            'default': 20,
+            'export': 5
+        }
+        self.machine_startups = dict((category, []) for category in CATEGORIES)
 
     def startup(self, event):
         """This gets called only by the very first event and makes sure that
@@ -251,16 +282,22 @@ class Scale(object):
         Args:
             job: A Job instance of the very first job
         """
-        startup_time = event.timestamp - MACHINE_INACTIVE
+        self.startup_time = event.timestamp - MACHINE_INACTIVE
         startup_amount = {
-            'url': 5,
+            'url': 7,
             'default': 40,
-            'export': 40
+            'export': 30
         }
         for category in CATEGORIES:
             data_dict = dict(zip(('timestamp', 'category', 'cmd'),
-                                 (startup_time, category, 'launch')))
+                                 (self.startup_time, category, 'launch')))
+            self.machine_startups[category].extend(
+                [self.startup_time] * startup_amount[category]
+            )
             self.events.extend([Command(data_dict)] * startup_amount[category])
+
+    def count(self, event):
+        pass
 
     def receive(self, event):
         """Receives an event and does algorithmic magic.
@@ -280,10 +317,55 @@ class Scale(object):
         self.events = [event]
         if not self.now:
             self.startup(event)
+            self.last_update = event.timestamp
         self.now = event.timestamp
 
-        # This is where the algorithm should go
+        self.history.append(event)
 
+        if self.now - self.last_update > 120:
+            self.last_update = self.now
+            counter = dict((category, 0) for category in CATEGORIES)
+            for i in range(len(self.history)):
+                job = self.history[-(i + 1)]
+                if self.now - job.timestamp > 3600:
+                    break
+                counter[job.category] += 1
+            next_hour = datetime.fromtimestamp(job.timestamp + 1800).hour
+            this_hour = datetime.fromtimestamp(job.timestamp).hour
+            # print counter
+            for category in CATEGORIES:
+                c = self.c[category] - self.reserve[category]
+                lmbda = counter[category] / min(3600,
+                                                self.now - self.startup_time) \
+                    * self.dynamics[next_hour] / self.dynamics[this_hour]
+                mu = self.mu[category]
+                rho = lmbda / (c * mu)
+                numerator = ((c * rho) ** c /
+                             math.factorial(c)) * (1 / (1 - rho))
+                Erlang = numerator / \
+                    (numpy.sum([(c * rho) ** k / math.factorial(k)
+                                for k in range(c)]) + numerator)
+                EW = self.correction_values[category] * \
+                    Erlang / (c * mu - lmbda)
+                if EW > 0.01 or EW < 0 \
+                        or (category == 'default' and EW > 0.000001):
+                    self.events.append(Command({
+                        'timestamp': self.now,
+                        'category': category,
+                        'cmd': 'launch'
+                    }))
+                    self.machine_startups[category].append(self.now)
+                    self.c[category] += 1
+                elif EW < 0.001 and c > 1:
+                    if any([(self.now - machine_startup) % 3600 <= 120
+                            for machine_startup in
+                            self.machine_startups[category]]):
+                        self.events.append(Command({
+                            'timestamp': self.now,
+                            'category': category,
+                            'cmd': 'terminate'
+                        }))
+                        self.c[category] -= 1
         return sorted(self.events)
 
 
@@ -317,7 +399,7 @@ class Evaluator(object):
         """
         self.now = 0
         self.billed = 0
-        self.penalty = 0
+        self.penalty = dict((category, 0) for category in CATEGORIES)
         self.overwait = False
         self.jobs = dict((category, []) for category in CATEGORIES)
         self.machines = dict((category, []) for category in CATEGORIES)
@@ -425,19 +507,21 @@ class Evaluator(object):
                               key=lambda machine: machine.available_from)
                 machine.busy_till = machine.available_from + job.duration
                 job.waiting_time = machine.available_from - job.timestamp
-                self.penalize(job.waiting_time)
+                self.penalize(job)
                 if not (machine.available_from - job.timestamp
                         < MAX_PENALTY_TIME):
                     self.overwait = True
 
-    def penalize(self, waiting_time):
+    def penalize(self, job):
         """Calculates the penalty incurred.
 
         Args:
-            waiting_time: The waiting time of this job
+            job: The job with a waiting time >5 that should be penalized
         """
+        waiting_time = job.waiting_time
         assert waiting_time >= 5, "No penalty for %r seconds" % waiting_time
-        self.penalty += (waiting_time - 5) / float(40)
+        self.penalty[job.category] += (waiting_time - 5) / float(40)
+        print self.penalty
 
     def bill(self, machine):
         """Charges the machine hours and adds it to the bill.
@@ -464,7 +548,7 @@ class Evaluator(object):
         if self.overwait:
             return 0
         else:
-            return self.billed + self.penalty
+            return self.billed + sum(self.penalty.values())
 
 
 class Machine(object):
@@ -580,6 +664,8 @@ class Statistics(WithLog):
                                        for category in CATEGORIES)
         self.machine_plots = dict((category, self.axes[1].plot([], [])[0])
                                   for category in CATEGORIES)
+        self.penalties = dict((category, self.axes[3].plot([], [])[0])
+                              for category in CATEGORIES)
         self.next_update = 0
 
     def add_point(self, line, new_data):
@@ -600,9 +686,6 @@ class Statistics(WithLog):
         for axis in self.axes:
             axis.relim()
             axis.autoscale_view()
-        self.axes[3].set_xlim([0, 60])
-        self.axes[3].set_ylim([0, 1000])
-        self.axes[3].plot([5, 5], [0, 1000], c='#A60628', ls=':')
         plt.draw()
 
     def update(self):
@@ -623,11 +706,8 @@ class Statistics(WithLog):
             self.add_point(self.waiting_time_plots[category],
                            (self.world.now,
                             numpy.mean(self.waiting_times[category])))
-        self.axes[3].clear()
-        self.axes[3].hist(
-            list(itertools.chain(*self.waiting_times.itervalues())),
-            range=(0, 60), bins=60
-        )
+            self.add_point(self.penalties[category],
+                           (self.world.now, self.world.penalty[category]))
         for queue in self.waiting_times.itervalues():
             queue.clear()
         for queue in self.arrivals.itervalues():
