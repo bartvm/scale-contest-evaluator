@@ -236,40 +236,17 @@ class Scale(object):
         startup_amount: The number of servers to start for each category
             in the form of a dictionary: {'url': 5, 'default': 10, ...}
     """
-    def __init__(self):
+    def __init__(self, category, starting_number):
         """TODO: This is where the algorithm should store the past data it
         needs to do its magic
         """
+        self.category = category
+        self.c = dict((category, 0) for category in CATEGORIES)
+        self.c[self.category] = starting_number
         self.now = 0
         self.last_update = 0
         self.events = []
-        self.correction_values = {
-            'default': 4.0407892579772025,
-            'export': 0.73534155000192447,
-            'url': 3.7580946764684886
-        }
-        self.dynamics = [0.0511657, 0.0524463, 0.0505391,
-                         0.0404101, 0.0341791, 0.0249423, 0.0207979, 0.0224209,
-                         0.0210963, 0.0223503, 0.0210258, 0.0273454, 0.0386998,
-                         0.0494469, 0.0564968, 0.0571024, 0.0567118, 0.0556437,
-                         0.0553419, 0.0547638, 0.0506890, 0.0484105, 0.0421447,
-                         0.0458286]
         self.history = collections.deque()
-        self.mu = {
-            'url': 0.769972967256,
-            'default': 0.028496851083,
-            'export': 0.0387079390787
-        }
-        self.c = {
-            'url': 7,
-            'default': 40,
-            'export': 30
-        }
-        self.reserve = {
-            'url': 6,
-            'default': 20,
-            'export': 5
-        }
         self.machine_startups = dict((category, []) for category in CATEGORIES)
 
     def startup(self, event):
@@ -283,23 +260,15 @@ class Scale(object):
             job: A Job instance of the very first job
         """
         self.startup_time = event.timestamp - MACHINE_INACTIVE
-        startup_amount = {
-            'url': 7,
-            'default': 40,
-            'export': 30
-        }
         for category in CATEGORIES:
             data_dict = dict(zip(('timestamp', 'category', 'cmd'),
                                  (self.startup_time, category, 'launch')))
             self.machine_startups[category].extend(
-                [self.startup_time] * startup_amount[category]
+                [self.startup_time] * self.c[category]
             )
-            self.events.extend([Command(data_dict)] * startup_amount[category])
+            self.events.extend([Command(data_dict)] * self.c[category])
 
-    def count(self, event):
-        pass
-
-    def receive(self, event):
+    def get_state(self, event):
         """Receives an event and does algorithmic magic.
 
         TODO: Everything (this is where the algorithm should do its work)
@@ -322,33 +291,12 @@ class Scale(object):
 
         self.history.append(event)
 
-        if self.now - self.last_update > 120:
-            self.last_update = self.now
-            counter = dict((category, 0) for category in CATEGORIES)
-            for i in range(len(self.history)):
-                job = self.history[-(i + 1)]
-                if self.now - job.timestamp > 3600:
-                    break
-                counter[job.category] += 1
-            next_hour = datetime.fromtimestamp(job.timestamp + 1800).hour
-            this_hour = datetime.fromtimestamp(job.timestamp).hour
-            # print counter
-            for category in CATEGORIES:
-                c = self.c[category] - self.reserve[category]
-                lmbda = counter[category] / min(3600,
-                                                self.now - self.startup_time) \
-                    * self.dynamics[next_hour] / self.dynamics[this_hour]
-                mu = self.mu[category]
-                rho = lmbda / (c * mu)
-                numerator = ((c * rho) ** c /
-                             math.factorial(c)) * (1 / (1 - rho))
-                Erlang = numerator / \
-                    (numpy.sum([(c * rho) ** k / math.factorial(k)
-                                for k in range(c)]) + numerator)
-                EW = self.correction_values[category] * \
-                    Erlang / (c * mu - lmbda)
-                if EW > 0.01 or EW < 0 \
-                        or (category == 'default' and EW > 0.000001):
+        return self.now, self.c
+
+    def process(self, required):
+        for category in CATEGORIES:
+            if self.c[category] < required[category]:
+                for _ in range(required[category] - self.c[category]):
                     self.events.append(Command({
                         'timestamp': self.now,
                         'category': category,
@@ -356,17 +304,16 @@ class Scale(object):
                     }))
                     self.machine_startups[category].append(self.now)
                     self.c[category] += 1
-                elif EW < 0.001 and c > 1:
-                    if any([(self.now - machine_startup) % 3600 <= 120
-                            for machine_startup in
-                            self.machine_startups[category]]):
-                        self.events.append(Command({
-                            'timestamp': self.now,
-                            'category': category,
-                            'cmd': 'terminate'
-                        }))
-                        self.c[category] -= 1
-        return sorted(self.events)
+            elif self.c[category] > required[category]:
+                best_machine = min(self.machine_startups[category], key=lambda t: t % BILLING_UNIT)
+                if best_machine < 5:
+                    self.machine_startups[category].remove(best_machine)
+                    self.c[category] -= 1
+                    self.events.append(Command({
+                        'timestamp': self.now,
+                        'category': category,
+                        'cmd': 'terminate'
+                    }))
 
 
 ### Scoring and measurement
@@ -398,9 +345,9 @@ class Evaluator(object):
                 algorithms (see class description)
         """
         self.now = 0
-        self.billed = 0
+        self.billed = dict((category, 0) for category in CATEGORIES)
         self.penalty = dict((category, 0) for category in CATEGORIES)
-        self.overwait = False
+        self.overwait = dict((category, False) for category in CATEGORIES)
         self.jobs = dict((category, []) for category in CATEGORIES)
         self.machines = dict((category, []) for category in CATEGORIES)
 
@@ -463,7 +410,7 @@ class Evaluator(object):
             category: The category from which to remove this machine
         """
         self.machines[category].remove(machine)
-        self.bill(machine)
+        self.bill(machine, category)
 
     def process_event(self, job):
         """Sends each event to a VM according to a specific scheduling
@@ -510,7 +457,7 @@ class Evaluator(object):
                 self.penalize(job)
                 if not (machine.available_from - job.timestamp
                         < MAX_PENALTY_TIME):
-                    self.overwait = True
+                    self.overwait[job.category] = True
 
     def penalize(self, job):
         """Calculates the penalty incurred.
@@ -523,14 +470,14 @@ class Evaluator(object):
         self.penalty[job.category] += (waiting_time - 5) / float(40)
         print self.penalty
 
-    def bill(self, machine):
+    def bill(self, machine, category):
         """Charges the machine hours and adds it to the bill.
 
         Args:
             machine: The machine that is being shut down and billed.
         """
         when_stops = max(self.now, machine.busy_till)
-        self.billed += (when_stops - machine.running_since) / BILLING_UNIT + 1
+        self.billed[category] += (when_stops - machine.running_since) / BILLING_UNIT + 1
 
     def evaluate(self):
         """Shuts down all the machines that are still one and adds up the
@@ -545,10 +492,7 @@ class Evaluator(object):
             while self.machines[category]:
                 machine = self.machines[category][0]
                 self.terminate(machine, category)
-        if self.overwait:
-            return 0
-        else:
-            return self.billed + sum(self.penalty.values())
+        return self.billed, self.penalty, self.overwait
 
 
 class Machine(object):
